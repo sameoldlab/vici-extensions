@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/vicinaehq/vicinae/refs/heads/main/extra/schemas/extension.json",
-  "name": "fuzzy-find",
-  "title": "Fuzzy Find",
+  "name": "fuzzy-files",
+  "title": "Fuzzy Files",
   "description": "sameoldlab's Plugin Repo",
   "categories": [],
   "license": "MIT",
@@ -12,9 +12,9 @@
   "commands": [
     {
       "name": "find",
-      "title": "Find",
+      "title": "Find Files",
       "subtitle": "Search for a file",
-      "description": "Search",
+      "description": "Search for a file",
       "mode": "view"
     }
   ],
