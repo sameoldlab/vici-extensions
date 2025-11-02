@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Action, ActionPanel, Icon, List } from "@vicinae/api";
-import { lstatSync, readFileSync } from "fs";
+import { lstatSync, readFileSync, Stats } from "fs";
 import { spawn } from "child_process";
 import { open } from "./script/open"
 import { getMimeTypeSync } from "./script/file";
+import { platform } from "process";
 
 interface File {
   id: number;
@@ -11,6 +12,7 @@ interface File {
   name: string;
   mime?: string;
   data: null | ArrayBuffer | string
+  info: Stats
 }
 
 const MIME = (mime: string): keyof typeof Icon => {
@@ -45,10 +47,10 @@ function Finder() {
     const search = async (query: string) => new Promise<File[]>((resolve, reject) => {
       writer.write(encoder.encode(`q:${query}\n`))
 
-      const onData = (res) => {
+      const onData = (res: Uint8Array) => {
         reader.off('data', onData)
 
-        const [len, ...lines] = decoder.decode(res).split('\n').filter(line => line.trim());
+        const [_, ...lines] = decoder.decode(res).split('\n').filter(line => line.trim());
         return Promise.all(lines
           .map(async (path, id) => {
             const name = path.split('/').pop() || path;
@@ -68,22 +70,27 @@ function Finder() {
 const finder = Finder()
 
 const readData = (file: File) => {
+  let data
   if (file.mime?.startsWith("image")) {
-    let data = readFileSync(file.path)
+    data = readFileSync(file.path)
     file.data = data?.buffer
   } else if (file.mime?.startsWith("text")) {
-    let data = readFileSync(file.path, 'utf8')
-    file.data = data
+    data = readFileSync(file.path, 'utf8')
   }
+  return data
 }
 
 
 export default function ListDetail(): JSX.Element {
   const [results, setResults] = useState<File[]>([]);
+  const [searchText, setSearchText] = useState<string>([]);
 
   return (
     <List
+      isShowingDetail
+      searchText={searchText}
       onSearchTextChange={query => {
+        setSearchText(query)
         finder.search(query).then(setResults)
       }}
       searchBarPlaceholder={'Search files'}
@@ -100,48 +107,41 @@ export default function ListDetail(): JSX.Element {
                   <List.Item.Detail.Metadata>
                     <List.Item.Detail.Metadata.Label title="Name" text={file.name} />
                     <List.Item.Detail.Metadata.Label title="Path" text={file.path} />
-                    {file.mime != "inode/directory" && (
+                    {file.mime != "inode/directory" && <>
                       <List.Item.Detail.Metadata.Label title="Type" text={file.mime || 'Unknown'} />
-                    )}
-                    <List.Item.Detail.Metadata.Label title="Size" text={fmtSize(file.info.size ?? 0)} />
-                    <List.Item.Detail.Metadata.Label title="Modified" text={file.info.mtime?.toLocaleString() || 'Unknown'} />
-                    <List.Item.Detail.Metadata.Label title="Created" text={file.info.birthtime?.toLocaleString() || 'Unknown'} />
+                      <List.Item.Detail.Metadata.Label title="Size" text={fmtSize(file.info.size ?? 0)} />
+                    </>}
+                    <List.Item.Detail.Metadata.Label title="Modified" text={file.info.mtime.toLocaleString() || 'Unknown'} />
+                    <List.Item.Detail.Metadata.Label title="Created" text={file.info.birthtime.toLocaleString() || 'Unknown'} />
                     <List.Item.Detail.Metadata.Label title="Permissions" text={fmtPerms(file.info.mode)} />
                   </List.Item.Detail.Metadata>
                 }
+                isLoading={true}
                 markdown={file.mime?.startsWith('text') ? readFileSync(file.path, 'utf8') : undefined}
               />
             }
-            // <Action title="Custom action" icon={Icon.Cog} onAction={() => showToast({ title: 'Hello from custom action' })} />
             actions={
               <ActionPanel>
-                <Action.CopyToClipboard title="Copy data" content={file.path} />
-
-                <Action.Open
-                  title="Open"
-                  target={file.path}
-                />
+                <Action.Open title="Open" target={file.path} />
+                {file.mime?.startsWith('text') && <Action.CopyToClipboard
+                  title="Copy File"
+                  content={readData(file) as string}
+                />}
+                <Action.CopyToClipboard title="Copy Path" content={file.path} />
+                {file.mime === 'inode/directory' && <Action
+                  title="Update Search"
+                  onAction={() => setSearchText(file.path)}
+                />}
                 <Action
-                  id="reveal"
                   title="Show in explorer"
-                  onAction={(id) => {
-                    if (!id) return
-                    const file = results[parseInt(id)]
+                  onAction={() => {
                     let path = file.path
                     if (file.mime && file.mime !== 'inode/directory') {
-                      const idx = path.lastIndexOf(Deno.build.os === 'windows' ? '\\' : '/')
+                      const idx = path.lastIndexOf(platform === 'win32' ? '\\' : '/')
                       path = path.slice(0, idx + 1)
                     }
                     open(path)
                   }}
-                />
-                <Action.CopyToClipboard
-                  title="Copy File"
-                  content={file.data}
-                />
-                <Action.CopyToClipboard
-                  title="Copy Path"
-                  content={file.path}
                 />
               </ActionPanel>
             }
