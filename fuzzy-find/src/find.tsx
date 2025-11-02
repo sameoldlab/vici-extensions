@@ -1,17 +1,20 @@
 import { useState } from "react";
-import { Action, ActionPanel, Icon, List } from "@vicinae/api";
-import { lstatSync, readFileSync, Stats } from "fs";
+import { Action, ActionPanel, Application, Icon, List, getDefaultApplication, open } from "@vicinae/api";
+import { lstatSync, readFile, readFileSync, Stats } from "fs";
 import { spawn } from "child_process";
-import { open } from "./script/open"
 import { getMimeTypeSync } from "./script/file";
 import { platform } from "process";
+import { promisify } from "util";
+
+let fileBrowser: Application
+getDefaultApplication("inode/directory").then(v => fileBrowser = v)
 
 interface File {
   id: number;
   path: string;
   name: string;
   mime?: string;
-  data: null | ArrayBuffer | string
+  // data: null | ArrayBuffer | string
   info: Stats
 }
 
@@ -64,16 +67,14 @@ function Finder() {
     return { search, exit }
 
   } catch (error) {
-    throw new Error(`Failed to spawn fuzzy-fd: ${error}`);
+    throw new Error(`Failed to spawn gf: ${error}`);
   }
 }
-const finder = Finder()
 
 const readData = (file: File) => {
   let data
   if (file.mime?.startsWith("image")) {
     data = readFileSync(file.path)
-    file.data = data?.buffer
   } else if (file.mime?.startsWith("text")) {
     data = readFileSync(file.path, 'utf8')
   }
@@ -81,9 +82,10 @@ const readData = (file: File) => {
 }
 
 
+const finder = Finder()
 export default function ListDetail(): JSX.Element {
   const [results, setResults] = useState<File[]>([]);
-  const [searchText, setSearchText] = useState<string>([]);
+  const [searchText, setSearchText] = useState<string>("");
 
   return (
     <List
@@ -95,7 +97,7 @@ export default function ListDetail(): JSX.Element {
       }}
       searchBarPlaceholder={'Search files'}
     >
-      <List.Section title={'Fuzzy Find'}>
+      <List.Section title={'Files'}>
         {results.map(file => (
           <List.Item
             key={file.id}
@@ -116,32 +118,37 @@ export default function ListDetail(): JSX.Element {
                     <List.Item.Detail.Metadata.Label title="Permissions" text={fmtPerms(file.info.mode)} />
                   </List.Item.Detail.Metadata>
                 }
-                isLoading={true}
                 markdown={file.mime?.startsWith('text') ? readFileSync(file.path, 'utf8') : undefined}
               />
             }
             actions={
               <ActionPanel>
-                <Action.Open title="Open" target={file.path} />
+                <Action.Open shortcut={"open"} title="Open" target={file.path} />
                 {file.mime?.startsWith('text') && <Action.CopyToClipboard
                   title="Copy File"
+                  shortcut={"pin"}
                   content={readData(file) as string}
                 />}
-                <Action.CopyToClipboard title="Copy Path" content={file.path} />
-                {file.mime === 'inode/directory' && <Action
-                  title="Update Search"
-                  onAction={() => setSearchText(file.path)}
-                />}
+                <Action.CopyToClipboard shortcut={"copy-path"} title="Copy Path" content={file.path} />
                 <Action
-                  title="Show in explorer"
+                  title="Search from directory"
+                  shortcut={"save"}
+                  icon={Icon["ArrowRightCircleFilled"]}
                   onAction={() => {
                     let path = file.path
-                    if (file.mime && file.mime !== 'inode/directory') {
-                      const idx = path.lastIndexOf(platform === 'win32' ? '\\' : '/')
-                      path = path.slice(0, idx + 1)
+                    if (file.mime !== 'inode/directory') {
+                      const startOfFileName = path.lastIndexOf(platform === 'win32' ? '\\' : '/')
+                      path = path.slice(0, startOfFileName + 1)
                     }
-                    open(path)
+                    setSearchText(path)
                   }}
+                />
+                <Action.Open
+                  title={`Reveal in ${fileBrowser.name}`}
+                  shortcut={"open-with"}
+                  icon={fileBrowser.icon}
+                  target={file.path}
+                  app={fileBrowser}
                 />
               </ActionPanel>
             }
