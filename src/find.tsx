@@ -1,6 +1,7 @@
-import { ReactElement, useMemo, useState } from "react";
-import { Action, ActionPanel, Icons, List } from "@project-gauntlet/api/components";
-import { Clipboard } from "@project-gauntlet/api/helpers"
+import { useMemo, useState } from "react";
+import { Action, ActionPanel, Icon, List } from "@vicinae/api";
+import { lstatSync, readFileSync } from "fs";
+import { spawn } from "child_process";
 import { open } from "./script/open"
 import { getMimeTypeSync } from "./script/file";
 
@@ -12,11 +13,11 @@ interface File {
   data: null | ArrayBuffer | string
 }
 
-const MIME = (mime: string): keyof typeof Icons => {
+const MIME = (mime: string): keyof typeof Icon => {
   if (!mime) return 'Document'
   if (mime.includes('image')) return "Image"
   if (mime.includes('directory')) return "Folder"
-  if (mime.includes('video')) return "Film"
+  if (mime.includes('video')) return "FilmStrip"
   if (mime.includes('audio')) return "Music"
   if (mime.includes('application')) return "Code"
   if (mime.includes('html')) return "Code"
@@ -25,36 +26,38 @@ const MIME = (mime: string): keyof typeof Icons => {
 }
 
 function Finder() {
-  const process = new Deno.Command("gf", {
-    stdin: "piped",
-    stderr: "null",
-    stdout: "piped"
-  }).spawn()
+  const process = spawn("gf", {
+    stdio: ['pipe', 'pipe', 'ignore']
+  })
 
   try {
     if (!process.stdin || !process.stdout) {
       throw new Error("Failed to create pipes");
     }
 
-    const writer = process.stdin.getWriter();
-    const reader = process.stdout.getReader();
+    const writer = process.stdin;
+    const reader = process.stdout;
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
 
     const exit = () => writer.write(encoder.encode(`c:Exit`))
 
-    const search = async (query: string): Promise<File[]> => {
-
+    const search = async (query: string) => new Promise<File[]>((resolve, reject) => {
       writer.write(encoder.encode(`q:${query}\n`))
-      const res = await reader.read();
-      const [len, ...lines] = decoder.decode(res.value).split('\n').filter(line => line.trim());
-      return Promise.all(lines
-        .map(async (path, id) => {
-          const name = path.split('/').pop() || path;
-          const mime = getMimeTypeSync(path);
-          return { id, path, name, mime, data: null }
-        }));
-    }
+
+      const onData = (res) => {
+        reader.off('data', onData)
+
+        const [len, ...lines] = decoder.decode(res).split('\n').filter(line => line.trim());
+        return Promise.all(lines
+          .map(async (path, id) => {
+            const name = path.split('/').pop() || path;
+            const mime = getMimeTypeSync(path);
+            return { id, path, name, mime, data: null, info: lstatSync(path) }
+          })).then(resolve).catch(reject)
+      }
+      reader.once('data', onData)
+    })
 
     return { search, exit }
 
@@ -66,138 +69,86 @@ const finder = Finder()
 
 const readData = (file: File) => {
   if (file.mime?.startsWith("image")) {
-    let data = Deno.readFileSync(file.path)
-    file.data = data.buffer
+    let data = readFileSync(file.path)
+    file.data = data?.buffer
   } else if (file.mime?.startsWith("text")) {
-    let data = Deno.readTextFileSync(file.path)
+    let data = readFileSync(file.path, 'utf8')
     file.data = data
   }
 }
 
 
-export default function(): ReactElement {
-  const [searchText, setSearchText] = useState<string>("");
+export default function ListDetail(): JSX.Element {
   const [results, setResults] = useState<File[]>([]);
-  const [selectedFile, setSelectedFile] = useState<number | undefined>();
-
-  const details = useMemo(() => {
-    if (typeof selectedFile != 'number') return undefined;
-    if (results.length === 0) return undefined
-
-    const file = results[selectedFile]!
-    if (!file.data) readData(file)
-    const fileinfo = Deno.lstatSync(file.path)
-
-    return {
-      ...fileinfo,
-      f: file,
-    };
-  }, [selectedFile, results]);
 
   return (
     <List
-      onItemFocusChange={id => setSelectedFile((id && parseInt(id)) || 0)}
-      actions={
-        <ActionPanel>
-          <Action
-            id="open"
-            label="Open"
-            onAction={(id) => id && open(results[parseInt(id)].path)}
-          />
-          <Action
-            id="reveal"
-            label="Show in explorer"
-            onAction={(id) => {
-              if (!id) return
-              const file = results[parseInt(id)]
-              let path = file.path
-              if (file.mime && file.mime !== 'inode/directory') {
-                const idx = path.lastIndexOf(Deno.build.os === 'windows' ? '\\' : '/')
-                path = path.slice(0, idx + 1)
-              }
-              open(path)
-            }}
-          />
-          <Action
-            id="copyFile"
-            label="Copy File"
-            onAction={async (id) => {
-              if (!id) return
-              let file = results[parseInt(id)]
-              if (!file.data) readData(file)
-              if (file.mime?.startsWith("text")) {
-                Clipboard.write({ "text/plain": file.data as string })
-              } else {
-                Clipboard.write({ "image/png": file.data as ArrayBuffer })
-              }
-            }}
-          />
-          <Action
-            id="copyPath"
-            label="Copy Path"
-            onAction={(id) => id && Clipboard.writeText(results[parseInt(id)].path)}
-          />
-        </ActionPanel>
-      }
+      onSearchTextChange={query => {
+        finder.search(query).then(setResults)
+      }}
+      searchBarPlaceholder={'Search files'}
     >
-      <List.SearchBar
-        value={searchText}
-        onChange={async (query = "") => {
-          setSearchText(query)
-          finder.search(query).then(setResults)
-        }}
-        placeholder="Search files"
-      />
+      <List.Section title={'Fuzzy Find'}>
+        {results.map(file => (
+          <List.Item
+            key={file.id}
+            title={file.name}
+            icon={Icon[MIME(file.mime ?? '')]}
+            detail={
+              <List.Item.Detail
+                metadata={
+                  <List.Item.Detail.Metadata>
+                    <List.Item.Detail.Metadata.Label title="Name" text={file.name} />
+                    <List.Item.Detail.Metadata.Label title="Path" text={file.path} />
+                    {file.mime != "inode/directory" && (
+                      <List.Item.Detail.Metadata.Label title="Type" text={file.mime || 'Unknown'} />
+                    )}
+                    <List.Item.Detail.Metadata.Label title="Size" text={fmtSize(file.info.size ?? 0)} />
+                    <List.Item.Detail.Metadata.Label title="Modified" text={file.info.mtime?.toLocaleString() || 'Unknown'} />
+                    <List.Item.Detail.Metadata.Label title="Created" text={file.info.birthtime?.toLocaleString() || 'Unknown'} />
+                    <List.Item.Detail.Metadata.Label title="Permissions" text={fmtPerms(file.info.mode)} />
+                  </List.Item.Detail.Metadata>
+                }
+                markdown={file.mime?.startsWith('text') ? readFileSync(file.path, 'utf8') : undefined}
+              />
+            }
+            // <Action title="Custom action" icon={Icon.Cog} onAction={() => showToast({ title: 'Hello from custom action' })} />
+            actions={
+              <ActionPanel>
+                <Action.CopyToClipboard title="Copy data" content={file.path} />
 
-      {results.map((file, i) => (
-        <List.Item
-          key={i}
-          id={file.id.toString()}
-          title={file.name}
-          icon={Icons[MIME(file.mime ?? '')]}
-        />
-      ))}
-
-      {details && (
-        <List.Detail>
-          <List.Detail.Metadata>
-            <List.Detail.Metadata.Value label="Name">
-              {details.f.name}
-            </List.Detail.Metadata.Value>
-            <List.Detail.Metadata.Value label="Path">
-              {details.f.path}
-            </List.Detail.Metadata.Value>
-            {details.f.mime != "inode/directory" && (
-              <List.Detail.Metadata.Value label="Type">
-                {details.f.mime || 'Unknown'}
-              </List.Detail.Metadata.Value>
-            )}
-            <List.Detail.Metadata.Value label="Size">
-              {fmtSize(details.size)}
-            </List.Detail.Metadata.Value>
-            <List.Detail.Metadata.Value label="Modified">
-              {details.mtime?.toLocaleString() || 'Unknown'}
-            </List.Detail.Metadata.Value>
-            <List.Detail.Metadata.Value label="Created">
-              {details.birthtime?.toLocaleString() || 'Unknown'}
-            </List.Detail.Metadata.Value>
-            <List.Detail.Metadata.Value label="Permissions">
-              {fmtPerms(details.mode)}
-            </List.Detail.Metadata.Value>
-          </List.Detail.Metadata>
-          {details.f.data && (
-            <List.Detail.Content>
-              {details.f.mime?.startsWith('text') && (
-                <List.Detail.Content.Paragraph>
-                  {details.f.data as string}
-                </List.Detail.Content.Paragraph>)}
-            </List.Detail.Content>
-          )}
-
-        </List.Detail>
-      )
-      }
-    </List >
+                <Action.Open
+                  title="Open"
+                  target={file.path}
+                />
+                <Action
+                  id="reveal"
+                  title="Show in explorer"
+                  onAction={(id) => {
+                    if (!id) return
+                    const file = results[parseInt(id)]
+                    let path = file.path
+                    if (file.mime && file.mime !== 'inode/directory') {
+                      const idx = path.lastIndexOf(Deno.build.os === 'windows' ? '\\' : '/')
+                      path = path.slice(0, idx + 1)
+                    }
+                    open(path)
+                  }}
+                />
+                <Action.CopyToClipboard
+                  title="Copy File"
+                  content={file.data}
+                />
+                <Action.CopyToClipboard
+                  title="Copy Path"
+                  content={file.path}
+                />
+              </ActionPanel>
+            }
+          />
+        ))}
+      </List.Section>
+    </List>
   );
 }
 

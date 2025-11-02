@@ -1,4 +1,6 @@
-const { os } = Deno.build
+import { platform as os } from 'node:process';
+import { execFileSync } from 'node:child_process';
+
 const OS_CMD: Record<string, { cmd: string, args: string[] }> = Object.freeze({
   darwin: { cmd: "file", args: ["--mime-type", "-b"] },
   linux: { cmd: "file", args: ["--mime-type", "-b"] },
@@ -7,15 +9,16 @@ const OS_CMD: Record<string, { cmd: string, args: string[] }> = Object.freeze({
 /** Get MIME type using file command */
 export function getMimeTypeSync(filePath: string): string {
   if (!Object.keys(OS_CMD).includes(os)) throw new Error(`unsupported os: ${os}`)
-
-  const output = new Deno.Command(OS_CMD[os].cmd, {
-    args: [...OS_CMD[os].args, filePath],
-    stdout: "piped",
-  }).outputSync();
-  if (output.code === 0) {
-    return new TextDecoder().decode(output.stdout).trim();
+  try {
+    const output = execFileSync(OS_CMD[os].cmd,
+      [...OS_CMD[os].args, filePath],
+      // "piped",
+      { encoding: 'utf8' }
+    )
+    return output.trim();
+  } catch (err) {
+    console.error(err)
+    return 'text/plain';
   }
-
-  return 'text/plain';
 }
 
